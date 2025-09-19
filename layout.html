@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>J4TNX BOT HOSTING</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  
+  <style>
+    body {
+      font-family: 'Poppins', sans-serif;
+      background: #000;
+      color: #fff;
+      margin: 0;
+      padding: 0;
+      text-align: center;
+    }
+
+    .container {
+      padding: 20px;
+    }
+
+    .title {
+      font-size: 17px;
+      font-weight: 600;
+      color: #00ffff;
+      text-shadow:
+        0 0 1px #00ffff,
+        0 0 3px #00ffff;
+      animation: softGlow 2s ease-in-out infinite;
+    }
+
+    @keyframes softGlow {
+      0%, 100% {
+        text-shadow:
+          0 0 1px #00ffff,
+          0 0 3px #00ffff;
+      }
+      50% {
+        text-shadow:
+          0 0 0.5px #00ffff,
+          0 0 2px #00ffff;
+      }
+    }
+
+    .subtitle {
+      font-size: 1em;
+      font-weight: 300;
+      color: #ccc;
+    }
+
+    footer {
+      margin-top: 50px;
+      font-size: 0.9em;
+      color: #888;
+    }
+
+    .flash-messages {
+      margin: 20px auto;
+      width: 80%;
+    }
+
+    .flash-success {
+      color: green;
+    }
+
+    .flash-error {
+      color: red;
+    }
+  </style>
+
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1 class="title">J4TNX BOT HOSTING</h1>
+      <p class="subtitle">Run your Python/JS scripts 24/7</p>
+    </header>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-messages">
+          {% for category, message in messages %}
+            <div class="flash-{{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+
+    <footer>
+      <p>&copy; <span id="year"></span> J4TNX. All rights reserved.</p>
+    </footer>
+  </div>
+
+  <script>
+    document.getElementById('year').textContent = new Date().getFullYear();
+  </script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+flask
+gunicorn
+python-telegram-bot
+instagrapi
+pyTelegramBotAPI
+pycryptodome
+requests
+telebot

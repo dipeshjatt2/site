@@ -1,0 +1,145 @@
+{% extends "layout.html" %}
+
+{% block content %}
+
+<!-- Upload Section -->
+<div style="border: 2px solid #ccc; border-radius: 10px; padding: 20px; margin: 20px auto; max-width: 900px; background-color: #1c1c1c;">
+    <div class="user-info" style="text-align: center;">
+        <h2>Welcome, {{ username }}!</h2>
+        <p>You can upload up to 5 files (Python/JS scripts)</p>
+    </div>
+
+    <div class="upload-section" style="text-align: center; margin-top: 20px;">
+        <form action="/upload" method="post" enctype="multipart/form-data">
+            <div class="form-group" style="display: flex; flex-direction: column; align-items: center;">
+                <label for="file-upload" class="file-upload-label" style="cursor: pointer; color: white;">
+                    <i class="fas fa-cloud-upload-alt"></i>
+                    <span>Choose File (.py, .js, .zip)</span>
+                    <input type="file" name="file" id="file-upload" required style="display: none;">
+                </label>
+                <button type="submit" class="action-btn" style="margin-top: 10px;">
+                    <i class="fas fa-upload"></i> Upload
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- File List Section -->
+<div style="border: 2px solid #ccc; border-radius: 10px; padding: 20px; margin: 20px auto; max-width: 900px; background-color: #1c1c1c;">
+    <div class="file-list">
+        {% if files %}
+            <div class="file-list-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h3>Your Files</h3>
+                <span>{{ files|length }}/5 files used</span>
+            </div>
+
+            <div class="files-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px;">
+                {% for file in files %}
+                <div class="file-card {% if file.running %}running{% else %}stopped{% endif %}" style="border: 1px solid #ccc; padding: 15px; border-radius: 10px; background-color: #2a2a2a;">
+                    <div class="file-info" style="text-align: center;">
+                        <h4>{{ file.name }}</h4>
+                        <span class="file-type">{{ file.type|upper }}</span>
+                    </div>
+
+                    <div class="file-status" style="text-align: center; margin: 10px 0;">
+                        {% if file.running %}
+                            <span class="status-badge running">
+                                <i class="fas fa-circle"></i> Running
+                            </span>
+                        {% else %}
+                            <span class="status-badge stopped">
+                                <i class="fas fa-circle"></i> Stopped
+                            </span>
+                        {% endif %}
+                    </div>
+
+                    <div class="file-actions" style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+                        <!-- Start button -->
+                        <a href="/control/{{ file.id }}/start" class="action-btn">
+                            <i class="fas fa-play"></i> Start
+                        </a>
+
+                        <!-- Logs button -->
+                        <a href="/logs/{{ file.id }}" class="action-btn" target="_blank">
+                            <i class="fas fa-terminal"></i> Logs
+                        </a>
+
+                        <!-- Stop button -->
+                        <a href="/control/{{ file.id }}/stop" class="action-btn">
+                            <i class="fas fa-stop"></i> Stop
+                        </a>
+
+                        <!-- Delete button -->
+                        <form action="/delete/{{ file.id }}" method="post" onsubmit="return confirm('Delete this file?')" style="width: 100%; display: flex; justify-content: center;">
+                            <button type="submit" class="action-btn" style="width: 160px;">
+                                <i class="fas fa-trash"></i> Delete
+                            </button>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="no-files" style="text-align: center; padding: 20px;">
+                <i class="fas fa-folder-open"></i>
+                <p>No files uploaded yet</p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Telegram Channel Join Section -->
+<div style="border: 2px solid #ccc; border-radius: 10px; padding: 20px; margin: 20px auto; max-width: 900px; text-align: center; background-color: #1c1c1c;">
+    <p style="font-weight: bold; font-size: 16px;">JOIN OUR TELEGRAM CHANNEL</p>
+    <a href="https://t.me/j4tnx1" target="_blank" style="text-decoration: none; color: #00acee;">
+        J4TNX
+    </a>
+</div>
+
+<!-- Button and UI Styling -->
+<style>
+    body {
+        background-color: #111;
+        color: white;
+    }
+
+    .file-type {
+        font-weight: bold;
+    }
+
+    .status-badge.running {
+        color: limegreen;
+    }
+
+    .status-badge.stopped {
+        color: red;
+    }
+
+    .action-btn {
+        display: inline-block;
+        width: 160px;
+        padding: 10px 0;
+        text-align: center;
+        font-size: 14px;
+        border: 1px solid #ffffff;
+        border-radius: 5px;
+        background-color: transparent;
+        text-decoration: none;
+        color: white;
+        transition: all 0.3s ease;
+        box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+    }
+
+    .action-btn:hover {
+        background-color: white;
+        color: #000;
+        box-shadow: 0 0 20px white;
+    }
+
+    .action-btn i {
+        margin-right: 5px;
+    }
+</style>
+
+{% endblock %}
