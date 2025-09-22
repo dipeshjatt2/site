@@ -342,8 +342,8 @@ def start_scraping():
         except (ValueError, TypeError):
             return jsonify({"error": "page_num must be an integer"}), 400
         
-        if not (1 <= page_num <= 10):
-            return jsonify({"error": "Page number must be between 1 and 10"}), 400
+        if not (1 <= page_num <= 1000):
+            return jsonify({"error": "Page number must be between 1 and 1000"}), 400
         
         task_id = uuid.uuid4().hex[:8]
         
