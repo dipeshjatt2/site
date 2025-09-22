@@ -466,7 +466,7 @@ def list_tasks():
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
-        "message": "Scraper API is operational.",
+        "message": "Scraper API is operational.  by   @andr0idpie9 akka  Choudhary sahab      ",
         "endpoints": {
             "GET /api/health": "Health check",
             "POST /api/scrape/start": "Body: {'creator_id': str, 'page_num': int}",
@@ -487,7 +487,7 @@ def cleanup_old_tasks():
     # Use a copy of keys to avoid runtime errors during dict modification
     tasks_to_remove = [
         task_id for task_id, task in scraper.active_tasks.items()
-        if current_time - task.get('start_time', 0) > 3600  # 1 hour
+        if current_time - task.get('start_time', 0) > 360000  # 1 hour
     ]
     
     if tasks_to_remove:
