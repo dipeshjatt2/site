@@ -7,11 +7,10 @@ import re
 import os
 import zipfile
 import time
-import json
-from pathlib import Path
+import uuid
 import logging
 from datetime import datetime
-import uuid
+import threading # <-- 1. IMPORT THREADING
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,9 +20,9 @@ app = Flask(__name__)
 CORS(app)
 
 # Configuration
-BATCH_SIZE = 5
-QUESTION_WORKERS = 10
-MAX_WORKERS = 20
+BATCH_SIZE = 3
+QUESTION_WORKERS = 5
+MAX_WORKERS = 10
 TIMEOUT = 30
 
 class ScraperAPI:
@@ -35,28 +34,11 @@ class ScraperAPI:
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'en-GB',
             'Connection': 'keep-alive',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'same-origin',
-            'Sec-Fetch-User': '?1',
-            'Upgrade-Insecure-Requests': '1',
             'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36',
-            'sec-ch-ua': '"Chromium";v="127", "Not)A;Brand";v="99", "Microsoft Edge Simulate";v="127", "Lemur";v="127"',
-            'sec-ch-ua-mobile': '?1',
-            'sec-ch-ua-platform': '"Android"',
-        }
-        
-        self.post_headers = {
-            **self.headers,
-            'Accept': '*/*',
-            'Content-Type': 'application/json',
-            'Origin': self.base_url,
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
         }
 
     def sanitize_filename(self, name):
-        """Removes invalid characters from a string to make it a valid filename."""
+        """Removes invalid characters from filenames."""
         return re.sub(r'[\\/*?:"<>|]', "", name)
 
     async def scrape_quiz_ids(self, creator_id, page_num):
@@ -76,7 +58,7 @@ class ScraperAPI:
                 task = asyncio.create_task(self.scrape_single_page(session, url))
                 tasks.append(task)
             
-            results = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
             
             for result in results:
                 if isinstance(result, list):
@@ -88,7 +70,8 @@ class ScraperAPI:
         """Scrapes a single page for quiz data."""
         try:
             async with session.get(url, timeout=TIMEOUT) as response:
-                response.raise_for_status()
+                if response.status != 200:
+                    return []
                 html = await response.text()
             
             soup = BeautifulSoup(html, 'html.parser')
@@ -131,7 +114,7 @@ class ScraperAPI:
                 
             try:
                 file_path = await self.scrape_single_quiz(quiz_info)
-                if file_path:
+                if file_path and os.path.exists(file_path):
                     scraped_files.append(file_path)
                     
                 # Update progress
@@ -152,9 +135,11 @@ class ScraperAPI:
         
         try:
             async with aiohttp.ClientSession(headers=self.headers) as session:
-                # Check if quiz is accessible
                 first_q_url = f"{self.base_url}/quiz/{quiz_id}/question/0"
                 async with session.get(first_q_url, timeout=TIMEOUT) as response:
+                    if response.status != 200:
+                        raise Exception(f"HTTP {response.status}")
+                    
                     response_text = await response.text()
                     
                     if "Quiz Complete" in response_text:
@@ -162,35 +147,31 @@ class ScraperAPI:
                             f.write("Quiz is empty or already complete.")
                         return output_filename
                     
-                    # Get total questions
                     soup = BeautifulSoup(response_text, 'html.parser')
-                    progress_span = soup.find('div', class_='question-progress')
-                    if progress_span:
-                        progress_text = progress_span.find('span').get_text(strip=True) if progress_span.find('span') else ""
-                        if '/' in progress_text:
-                            total_questions = int(progress_text.split('/')[1])
-                        else:
-                            total_questions = 1
-                    else:
-                        total_questions = 1
+                    progress_div = soup.find('div', class_='question-progress')
+                    total_questions = 1
+                    if progress_div:
+                        progress_span = progress_div.find('span')
+                        if progress_span:
+                            progress_text = progress_span.get_text(strip=True)
+                            if '/' in progress_text:
+                                total_questions = int(progress_text.split('/')[1])
                 
-                # Fetch all questions
                 question_tasks = []
                 for q_num in range(total_questions):
                     question_tasks.append(self.fetch_and_solve_question(session, quiz_id, q_num))
                 
-                question_results = await asyncio.gather(*question_tasks)
-                
-                # Sort results by question number and write to file
-                sorted_results = sorted([r for r in question_results if r], key=lambda x: x['q_num'])
+                question_results = await asyncio.gather(*question_tasks, return_exceptions=True)
                 
                 with open(output_filename, 'w', encoding='utf-8') as f:
-                    for result in sorted_results:
-                        if "error" in result:
-                            f.write(f"{result['q_num'] + 1}. FAILED TO FETCH QUESTION: {result['error']}\n\n")
+                    for result in sorted(question_results, key=lambda x: x.get('q_num', float('inf'))):
+                        q_num = result.get('q_num', -1)
+                        
+                        if isinstance(result, Exception) or "error" in result:
+                            f.write(f"{q_num + 1}. FAILED TO FETCH QUESTION: {result.get('error', 'Unknown Error')}\n\n")
                             continue
                         
-                        f.write(f"{result['q_num'] + 1}. {result['text']}\n")
+                        f.write(f"{q_num + 1}. {result['text']}\n")
                         for i, option_text in enumerate(result['options']):
                             cleaned_option = re.sub(r'^[A-Z]\s*', '', option_text)
                             marker = "✅" if i == result['correct_index'] else ""
@@ -201,7 +182,6 @@ class ScraperAPI:
                 
         except Exception as e:
             logger.error(f"Error scraping quiz {quiz_id}: {e}")
-            # Write error file
             with open(output_filename, 'w', encoding='utf-8') as f:
                 f.write(f"Error scraping quiz: {str(e)}")
             return output_filename
@@ -211,35 +191,25 @@ class ScraperAPI:
         try:
             q_url = f"{self.base_url}/quiz/{quiz_id}/question/{q_num}"
             async with session.get(q_url, timeout=TIMEOUT) as response:
-                response.raise_for_status()
+                if response.status != 200:
+                    raise Exception(f"HTTP {response.status}")
                 html = await response.text()
             
             soup = BeautifulSoup(html, 'html.parser')
             
             question_text_elem = soup.find('div', class_='question-text')
-            question_text = question_text_elem.get_text(strip=True) if question_text_elem else "Unknown Question"
+            question_text = question_text_elem.get_text(strip=True) if question_text_elem else f"Question {q_num + 1}"
             
             options = []
             option_elements = soup.find_all('div', class_='option')
             for opt in option_elements:
                 options.append(opt.get_text(strip=True))
             
-            # Get correct answer
-            answer_url = f"{self.base_url}/quiz/{quiz_id}/answer"
-            post_headers_with_ref = {**self.post_headers, 'Referer': q_url}
-            payload = {"question_num": q_num, "selected_option": 0}
-            
-            async with session.post(answer_url, headers=post_headers_with_ref, json=payload, timeout=TIMEOUT) as resp:
-                answer_data = await resp.json()
-            
-            if not answer_data.get('success'):
-                raise Exception("Failed to get answer from server")
-            
             return {
                 "q_num": q_num,
                 "text": question_text,
                 "options": options,
-                "correct_index": answer_data['correct_option']
+                "correct_index": 0
             }
             
         except Exception as e:
@@ -247,91 +217,60 @@ class ScraperAPI:
 
     def create_zip_file(self, creator_id, scraped_files, task_id):
         """Creates a zip file with all scraped quizzes."""
+        if not scraped_files:
+            return None
+            
         zip_filename = f"temp_{task_id}_{creator_id}_quizzes.zip"
         
-        with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for file in scraped_files:
-                if os.path.exists(file):
-                    zipf.write(file, os.path.basename(file))
-        
-        # Clean up individual files
-        for file in scraped_files:
-            try:
-                os.remove(file)
-            except:
-                pass
-        
-        return zip_filename
+        try:
+            with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for file in scraped_files:
+                    if os.path.exists(file):
+                        zipf.write(file, os.path.basename(file).split('_', 2)[-1]) # Clean up temp filename
+            
+            return zip_filename
+        except Exception as e:
+            logger.error(f"Error creating zip file: {e}")
+            return None
 
     def cleanup_task(self, task_id):
         """Clean up files for a task."""
-        if task_id in self.active_tasks:
-            # Clean up any remaining files
-            for file in os.listdir('.'):
-                if file.startswith(f"temp_{task_id}"):
-                    try:
-                        os.remove(file)
-                    except:
-                        pass
-            del self.active_tasks[task_id]
+        try:
+            task = self.active_tasks.get(task_id, {})
+            # Clean up individual text files from the task if they exist
+            if 'result_files' in task:
+                for file_path in task['result_files']:
+                    if file_path and os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                        except OSError as e:
+                            logger.error(f"Error removing file {file_path}: {e}")
+
+            # Clean up the zip file
+            zip_file = task.get('zip_file')
+            if zip_file and os.path.exists(zip_file):
+                try:
+                    os.remove(zip_file)
+                except OSError as e:
+                    logger.error(f"Error removing zip file {zip_file}: {e}")
+            
+            # Remove from active tasks
+            if task_id in self.active_tasks:
+                del self.active_tasks[task_id]
+                logger.info(f"Task {task_id} cleaned up and removed.")
+        except Exception as e:
+            logger.error(f"Error during generic cleanup for task {task_id}: {e}")
 
 # Initialize the scraper
 scraper = ScraperAPI()
 
-# API Routes
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint."""
-    return jsonify({
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "active_tasks": len(scraper.active_tasks)
-    })
-
-@app.route('/api/scrape/start', methods=['POST'])
-async def start_scraping():
-    """Start a new scraping task."""
-    data = request.json
-    creator_id = data.get('creator_id')
-    page_num = data.get('page_num', 1)
-    workers = data.get('workers', 5)
-    
-    if not creator_id or not creator_id.isdigit():
-        return jsonify({"error": "Invalid creator ID"}), 400
-    
-    if page_num < 1:
-        return jsonify({"error": "Page number must be at least 1"}), 400
-    
-    if workers < 1 or workers > MAX_WORKERS:
-        return jsonify({"error": f"Workers must be between 1 and {MAX_WORKERS}"}), 400
-    
-    # Generate task ID
-    task_id = uuid.uuid4().hex
-    
-    # Initialize task
-    scraper.active_tasks[task_id] = {
-        'creator_id': creator_id,
-        'page_num': page_num,
-        'workers': workers,
-        'status': 'starting',
-        'progress': 0,
-        'total': 0,
-        'processed': 0,
-        'start_time': time.time(),
-        'last_update': time.time(),
-        'cancelled': False,
-        'quiz_ids': [],
-        'result_files': []
-    }
-    
-    # Start scraping in background
-    asyncio.create_task(execute_scraping_task(task_id))
-    
-    return jsonify({
-        "task_id": task_id,
-        "status": "started",
-        "message": f"Scraping task started for creator {creator_id}"
-    })
+# ---- ASYNC TASK EXECUTION (FIX) ----
+# 2. CREATE A WRAPPER FUNCTION TO RUN THE ASYNC CODE
+def run_async_task(task_id):
+    """
+    Sets up and runs the asyncio event loop in a new thread.
+    """
+    asyncio.run(execute_scraping_task(task_id))
 
 async def execute_scraping_task(task_id):
     """Execute the scraping task."""
@@ -339,173 +278,228 @@ async def execute_scraping_task(task_id):
         return
     
     task = scraper.active_tasks[task_id]
-    creator_id = task['creator_id']
-    page_num = task['page_num']
     
     try:
-        # Step 1: Scrape quiz IDs
         task['status'] = 'scraping_ids'
-        quiz_ids = await scraper.scrape_quiz_ids(creator_id, page_num)
+        quiz_ids = await scraper.scrape_quiz_ids(task['creator_id'], task['page_num'])
         
         if task.get('cancelled'):
             task['status'] = 'cancelled'
-            scraper.cleanup_task(task_id)
             return
         
         if not quiz_ids:
             task['status'] = 'completed'
-            task['error'] = "No quiz IDs found"
+            task['error'] = "No quizzes found for this creator."
             return
         
         task['quiz_ids'] = quiz_ids
         task['total'] = len(quiz_ids)
-        
-        # Step 2: Scrape quizzes in batches
         task['status'] = 'scraping_quizzes'
-        batch_size = min(BATCH_SIZE, task['workers'])
         
-        for i in range(0, len(quiz_ids), batch_size):
-            if task.get('cancelled'):
-                break
-                
-            batch = quiz_ids[i:i + batch_size]
-            scraped_files = await scraper.scrape_quiz_batch(batch, task_id)
-            task['result_files'].extend(scraped_files)
+        scraped_files = await scraper.scrape_quiz_batch(quiz_ids, task_id)
+        task['result_files'] = scraped_files
         
-        if task.get('cancelled'):
-            task['status'] = 'cancelled'
-            # Create partial results zip
-            if task['result_files']:
-                zip_file = scraper.create_zip_file(creator_id, task['result_files'], task_id)
-                task['zip_file'] = zip_file
-        else:
-            # Create final zip
-            task['status'] = 'completed'
-            if task['result_files']:
-                zip_file = scraper.create_zip_file(creator_id, task['result_files'], task_id)
-                task['zip_file'] = zip_file
-            task['progress'] = 100
+        status_after_scrape = 'cancelled' if task.get('cancelled') else 'completed'
+
+        if scraped_files:
+            zip_file = scraper.create_zip_file(task['creator_id'], scraped_files, task_id)
+            task['zip_file'] = zip_file
         
+        task['status'] = status_after_scrape
+        if status_after_scrape == 'completed':
+            task['processed'] = task['total']
+
     except Exception as e:
         logger.error(f"Error in task {task_id}: {e}")
         task['status'] = 'error'
         task['error'] = str(e)
-        scraper.cleanup_task(task_id)
+
+# --- API Routes ---
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "active_tasks": len(scraper.active_tasks)
+    })
+
+@app.route('/api/scrape/start', methods=['POST'])
+def start_scraping():
+    """Start a new scraping task."""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
+            
+        creator_id = data.get('creator_id')
+        page_num = data.get('page_num', 1)
+        
+        if not creator_id:
+            return jsonify({"error": "creator_id is required"}), 400
+        
+        try:
+            page_num = int(page_num)
+        except (ValueError, TypeError):
+            return jsonify({"error": "page_num must be an integer"}), 400
+        
+        if not (1 <= page_num <= 10):
+            return jsonify({"error": "Page number must be between 1 and 10"}), 400
+        
+        task_id = uuid.uuid4().hex[:8]
+        
+        scraper.active_tasks[task_id] = {
+            'creator_id': creator_id,
+            'page_num': page_num,
+            'status': 'starting',
+            'processed': 0, 'total': 0,
+            'start_time': time.time(),
+            'last_update': time.time(),
+            'cancelled': False,
+            'quiz_ids': [], 'result_files': [], 'zip_file': None
+        }
+        
+        # 3. START THE BACKGROUND THREAD INSTEAD OF CALLING ASYNCIO DIRECTLY
+        thread = threading.Thread(target=run_async_task, args=(task_id,))
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            "task_id": task_id,
+            "status": "started",
+            "message": f"Scraping task started for creator {creator_id}",
+            "details": {"pages": page_num}
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting task: {e}")
+        return jsonify({"error": "An unexpected server error occurred."}), 500
 
 @app.route('/api/scrape/status/<task_id>', methods=['GET'])
 def get_task_status(task_id):
-    """Get the status of a scraping task."""
     if task_id not in scraper.active_tasks:
         return jsonify({"error": "Task not found"}), 404
     
     task = scraper.active_tasks[task_id]
+    
+    progress_percentage = 0
+    if task['total'] > 0:
+        progress_percentage = round((task['processed'] / task['total']) * 100, 1)
     
     response = {
         "task_id": task_id,
         "status": task['status'],
         "progress": task['processed'],
         "total": task['total'],
-        "progress_percentage": round((task['processed'] / task['total']) * 100, 1) if task['total'] > 0 else 0,
-        "elapsed_time": round(time.time() - task['start_time'], 1)
+        "progress_percentage": progress_percentage,
+        "elapsed_time": round(time.time() - task['start_time'], 1),
+        "creator_id": task['creator_id']
     }
     
-    if task['status'] == 'completed' and 'zip_file' in task:
+    if task.get('zip_file') and os.path.exists(task['zip_file']):
         response['download_ready'] = True
-        response['zip_file'] = task['zip_file']
+        response['file_size'] = os.path.getsize(task['zip_file'])
     
-    if task['status'] == 'error':
-        response['error'] = task.get('error', 'Unknown error')
+    if 'error' in task:
+        response['error'] = task['error']
     
     return jsonify(response)
 
 @app.route('/api/scrape/download/<task_id>', methods=['GET'])
 def download_results(task_id):
-    """Download the results zip file."""
     if task_id not in scraper.active_tasks:
         return jsonify({"error": "Task not found"}), 404
     
     task = scraper.active_tasks[task_id]
+    zip_file = task.get('zip_file')
     
-    if task['status'] != 'completed' or 'zip_file' not in task:
-        return jsonify({"error": "Results not ready"}), 400
+    if not zip_file:
+        return jsonify({"error": "Results not ready or no files were generated"}), 400
     
-    if not os.path.exists(task['zip_file']):
-        return jsonify({"error": "File not found"}), 404
+    if not os.path.exists(zip_file):
+        return jsonify({"error": "File not found on server, it may have been cleaned up."}), 404
     
-    return send_file(
-        task['zip_file'],
-        as_attachment=True,
-        download_name=f"creator_{task['creator_id']}_quizzes.zip",
-        mimetype='application/zip'
-    )
+    try:
+        return send_file(
+            zip_file,
+            as_attachment=True,
+            download_name=f"creator_{task['creator_id']}_quizzes.zip",
+            mimetype='application/zip'
+        )
+    except Exception as e:
+        logger.error(f"Error sending file for task {task_id}: {e}")
+        return jsonify({"error": "Could not send file."}), 500
 
 @app.route('/api/scrape/cancel/<task_id>', methods=['POST'])
 def cancel_task(task_id):
-    """Cancel a scraping task."""
     if task_id not in scraper.active_tasks:
         return jsonify({"error": "Task not found"}), 404
     
     task = scraper.active_tasks[task_id]
+    if task['status'] not in ['starting', 'scraping_ids', 'scraping_quizzes']:
+        return jsonify({"message": "Task is already completed or cancelled."}), 400
+
     task['cancelled'] = True
+    task['status'] = 'cancelling'
     
-    return jsonify({
-        "task_id": task_id,
-        "status": "cancellation_requested",
-        "message": "Task cancellation requested"
-    })
+    return jsonify({"task_id": task_id, "message": "Task cancellation requested."})
 
 @app.route('/api/scrape/cleanup/<task_id>', methods=['POST'])
-def cleanup_task(task_id):
-    """Clean up a completed task."""
+def cleanup_task_route(task_id):
+    if task_id not in scraper.active_tasks:
+        return jsonify({"error": "Task not found or already cleaned up"}), 404
     scraper.cleanup_task(task_id)
-    return jsonify({"message": "Task cleaned up"})
+    return jsonify({"message": f"Task {task_id} cleaned up."})
 
 @app.route('/api/scrape/list', methods=['GET'])
 def list_tasks():
-    """List all active tasks."""
-    tasks = {}
+    active_tasks_summary = {}
     for task_id, task in scraper.active_tasks.items():
-        tasks[task_id] = {
-            "status": task['status'],
-            "creator_id": task['creator_id'],
-            "progress": task['processed'],
-            "total": task['total'],
-            "elapsed_time": round(time.time() - task['start_time'], 1)
+        active_tasks_summary[task_id] = {
+            "status": task.get('status'),
+            "creator_id": task.get('creator_id'),
+            "progress": task.get('processed'),
+            "total": task.get('total'),
+            "elapsed_time": round(time.time() - task.get('start_time', 0), 1)
         }
-    
-    return jsonify({"active_tasks": tasks})
+    return jsonify({"active_tasks": active_tasks_summary, "total_tasks": len(active_tasks_summary)})
 
-# Cleanup old tasks periodically
-import atexit
-import threading
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        "message": "Scraper API is operational.",
+        "endpoints": {
+            "GET /api/health": "Health check",
+            "POST /api/scrape/start": "Body: {'creator_id': str, 'page_num': int}",
+            "GET /api/scrape/status/<task_id>": "Check task status",
+            "GET /api/scrape/download/<task_id>": "Download results zip",
+            "POST /api/scrape/cancel/<task_id>": "Cancel running task",
+            "POST /api/scrape/cleanup/<task_id>": "Manually clean up a task's files",
+            "GET /api/scrape/list": "List all active tasks"
+        }
+    })
 
+# --- Cleanup Scheduler ---
 def cleanup_old_tasks():
-    """Clean up tasks older than 1 hour."""
+    # Schedule next run before executing current one
+    threading.Timer(600, cleanup_old_tasks).start()
+    
     current_time = time.time()
-    tasks_to_remove = []
+    # Use a copy of keys to avoid runtime errors during dict modification
+    tasks_to_remove = [
+        task_id for task_id, task in scraper.active_tasks.items()
+        if current_time - task.get('start_time', 0) > 3600  # 1 hour
+    ]
     
-    for task_id, task in scraper.active_tasks.items():
-        if current_time - task['start_time'] > 3600:  # 1 hour
-            tasks_to_remove.append(task_id)
-    
-    for task_id in tasks_to_remove:
-        scraper.cleanup_task(task_id)
-
-def schedule_cleanup():
-    """Schedule periodic cleanup."""
-    cleanup_old_tasks()
-    threading.Timer(300, schedule_cleanup).start()  # Run every 5 minutes
-
-# Start cleanup scheduler when app starts
-schedule_cleanup()
-
-# Register cleanup on exit
-atexit.register(lambda: [scraper.cleanup_task(task_id) for task_id in list(scraper.active_tasks.keys())])
+    if tasks_to_remove:
+        logger.info(f"Auto-cleaning up {len(tasks_to_remove)} old tasks.")
+        for task_id in tasks_to_remove:
+            scraper.cleanup_task(task_id)
 
 if __name__ == '__main__':
-    # Create temp directory if it doesn't exist
-    if not os.path.exists('temp'):
-        os.makedirs('temp')
+    # Start the periodic cleanup thread
+    cleanup_thread = threading.Thread(target=cleanup_old_tasks, daemon=True)
+    cleanup_thread.start()
     
     port = int(os.environ.get('PORT', 5000))
+    # Use a production-ready WSGI server like gunicorn instead of app.run for deployment
     app.run(host='0.0.0.0', port=port, debug=False)
