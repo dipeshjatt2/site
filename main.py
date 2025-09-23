@@ -27,21 +27,28 @@ class ScraperAPI:
         self.active_tasks = {}
         self.base_url = "https://testnookapp-f602da876a9b.herokuapp.com"
         
-        # Headers for GET requests
+        # Updated headers to match the working script for better compatibility
         self.headers = {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'en-GB',
             'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1',
             'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36',
+            'sec-ch-ua': '"Chromium";v="127", "Not)A;Brand";v="99", "Microsoft Edge Simulate";v="127", "Lemur";v="127"',
+            'sec-ch-ua-mobile': '?1',
+            'sec-ch-ua-platform': '"Android"',
         }
         
-        # Headers for POST requests (to get the answer)
+        # POST headers will automatically inherit the updated base headers
         self.post_headers = {
             **self.headers,
             'Accept': '*/*',
             'Content-Type': 'application/json',
             'Origin': self.base_url,
-            'Sec-Fetch-Dest': 'empty',
             'Sec-Fetch-Mode': 'cors',
         }
 
@@ -51,11 +58,14 @@ class ScraperAPI:
 
     async def scrape_quiz_ids(self, creator_id, page_num):
         """Scrapes quiz IDs from creator pages."""
+        urls = []
+        for i in range(1, page_num + 1):
+            if i == 1:
+                urls.append(f"{self.base_url}/creator/{creator_id}")
+            else:
+                urls.append(f"{self.base_url}/creator/{creator_id}?page={i}")
+
         quiz_ids = []
-        urls = [f"{self.base_url}/creator/{creator_id}"]
-        if page_num > 1:
-            urls.extend([f"{self.base_url}/creator/{creator_id}?page={page}" for page in range(2, page_num + 1)])
-        
         async with aiohttp.ClientSession(headers=self.headers) as session:
             tasks = [self.scrape_single_page(session, url) for url in urls]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -118,7 +128,6 @@ class ScraperAPI:
         
         try:
             async with aiohttp.ClientSession() as session:
-                # 1. Get the first question to find the total number of questions
                 first_q_url = f"{self.base_url}/quiz/{quiz_id}/question/0"
                 async with session.get(first_q_url, headers=self.headers, timeout=TIMEOUT) as response:
                     response.raise_for_status()
@@ -133,13 +142,10 @@ class ScraperAPI:
                     progress_span = soup.find('div', class_='question-progress').find('span')
                     total_questions = int(progress_span.get_text(strip=True).split('/')[1]) if progress_span else 1
                 
-                # 2. Create concurrent tasks for all questions
                 question_tasks = [self.fetch_and_solve_question(session, quiz_id, q_num) for q_num in range(total_questions)]
                 question_results = await asyncio.gather(*question_tasks, return_exceptions=True)
                 
-                # 3. Write results to file
                 with open(output_filename, 'w', encoding='utf-8') as f:
-                    # Sort results by question number to ensure correct order
                     sorted_results = sorted(
                         [r for r in question_results if isinstance(r, dict)], 
                         key=lambda x: x.get('q_num', float('inf'))
@@ -165,12 +171,8 @@ class ScraperAPI:
             return output_filename
 
     async def fetch_and_solve_question(self, session, quiz_id, q_num):
-        """
-        --- THIS IS THE CORRECTED FUNCTION ---
-        Fetches a question, submits a dummy answer to get the correct option, and returns the parsed data.
-        """
+        """Fetches a question, submits a dummy answer to get the correct option, and returns the parsed data."""
         try:
-            # Step 1: GET the question page to parse its content
             q_url = f"{self.base_url}/quiz/{quiz_id}/question/{q_num}"
             async with session.get(q_url, headers=self.headers, timeout=TIMEOUT) as response:
                 response.raise_for_status()
@@ -182,11 +184,9 @@ class ScraperAPI:
             
             options = [opt.get_text(strip=True) for opt in soup.find_all('div', class_='option')]
             
-            # Step 2: POST a dummy answer to the answer endpoint to get the correct index
             answer_url = f"{self.base_url}/quiz/{quiz_id}/answer"
-            payload = {"question_num": q_num, "selected_option": 0} # We always send '0' as a dummy
+            payload = {"question_num": q_num, "selected_option": 0}
             
-            # Add dynamic Referer header for the POST request
             current_post_headers = {**self.post_headers, 'Referer': q_url}
             
             async with session.post(answer_url, json=payload, headers=current_post_headers, timeout=TIMEOUT) as answer_res:
@@ -198,12 +198,11 @@ class ScraperAPI:
 
             correct_option_index = answer_data['correct_option']
             
-            # Step 3: Return the complete, correct data
             return {
                 "q_num": q_num,
                 "text": question_text,
                 "options": options,
-                "correct_index": correct_option_index # Use the real index from the server
+                "correct_index": correct_option_index
             }
             
         except Exception as e:
@@ -216,7 +215,6 @@ class ScraperAPI:
             with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file in scraped_files:
                     if os.path.exists(file):
-                        # Use basename to remove path and split to clean up temp prefix
                         zipf.write(file, os.path.basename(file).split('_', 2)[-1])
             return zip_filename
         except Exception as e:
@@ -293,7 +291,7 @@ async def execute_scraping_task(task_id):
         task['status'] = 'error'
         task['error'] = str(e)
 
-# --- API Routes (ALL ENDPOINTS RESTORED) ---
+# --- API Routes ---
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({
@@ -304,7 +302,6 @@ def health_check():
 
 @app.route('/api/scrape/start', methods=['POST'])
 def start_scraping():
-    """Starts a new scraping task in a background thread."""
     data = request.get_json()
     if not data or 'creator_id' not in data:
         return jsonify({"error": "creator_id is required"}), 400
@@ -398,7 +395,6 @@ def cleanup_task_route(task_id):
 @app.route('/api/scrape/list', methods=['GET'])
 def list_tasks():
     active_tasks_summary = {}
-    # Use list() to avoid RuntimeError if dict changes during iteration
     for task_id, task in list(scraper.active_tasks.items()):
         active_tasks_summary[task_id] = {
             "status": task.get('status'),
@@ -427,13 +423,12 @@ def home():
 # --- Cleanup Scheduler ---
 def cleanup_old_tasks():
     while True:
-        time.sleep(6000) # Check every 100 minutes
+        time.sleep(600)
         try:
             current_time = time.time()
-            # Use list() to create a copy of items for safe iteration
             tasks_to_remove = [
                 task_id for task_id, task in list(scraper.active_tasks.items())
-                if current_time - task.get('start_time', 0) > 36000 # 10 hour
+                if current_time - task.get('start_time', 0) > 36000
             ]
             if tasks_to_remove:
                 logger.info(f"Auto-cleaning {len(tasks_to_remove)} old tasks.")
@@ -443,9 +438,7 @@ def cleanup_old_tasks():
             logger.error(f"Error in cleanup thread: {e}")
 
 if __name__ == '__main__':
-    # Start the periodic cleanup thread
     cleanup_thread = threading.Thread(target=cleanup_old_tasks, daemon=True)
     cleanup_thread.start()
     port = int(os.environ.get('PORT', 5000))
-    # For production, it's better to use a WSGI server like Gunicorn or Waitress
     app.run(host='0.0.0.0', port=port, debug=False)
