@@ -56,8 +56,23 @@ class ScraperAPI:
         }
 
     def sanitize_filename(self, name):
-        """Removes invalid characters from filenames."""
-        return re.sub(r'[\\/*?:"<>|]', "", name)
+        """
+        Cleans and sanitizes a string to be used as a valid filename.
+        Handles special characters, newlines, and length issues.
+        """
+        # Replace newline characters with a space
+        name = name.replace('\n', ' ').replace('\r', '')
+        # Remove characters that are invalid in filenames across most OS
+        name = re.sub(r'[\\/*?:"<>|]', "", name)
+        # Trim leading/trailing whitespace
+        name = name.strip()
+        # Truncate the name to a safe length (e.g., 150 characters) to avoid filesystem errors
+        if len(name) > 150:
+            name = name[:150]
+        # If the name is empty after sanitization, provide a default name
+        if not name:
+            name = "untitled_quiz"
+        return name
 
     async def scrape_quiz_ids(self, creator_id, page_num):
         """Scrapes quiz IDs from creator pages."""
@@ -150,12 +165,15 @@ class ScraperAPI:
         return scraped_files
 
     async def scrape_single_quiz(self, quiz_info):
-        """Scrapes a single quiz with parallel question processing using the improved format."""
+        """Scrapes a single quiz and saves it using a sanitized version of its name."""
         quiz_name = quiz_info['quiz_name']
         quiz_id = quiz_info['quiz_id']
         
-        # Use quiz ID as filename to avoid issues with special characters
-        output_filename = f"{quiz_id}.txt"
+        # Sanitize the quiz name to create a valid filename.
+        sanitized_name = self.sanitize_filename(quiz_name)
+        
+        # Append the unique quiz_id to prevent files with the same name from overwriting each other.
+        output_filename = f"{sanitized_name}_{quiz_id}.txt"
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -278,7 +296,8 @@ class ScraperAPI:
             with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file in scraped_files:
                     if os.path.exists(file):
-                        # Use the original filename (quiz_id.txt) for the zip
+                        # The file already has the new sanitized name on disk,
+                        # so os.path.basename(file) will use that name in the zip archive.
                         zipf.write(file, os.path.basename(file))
             return zip_filename
         except Exception as e:
